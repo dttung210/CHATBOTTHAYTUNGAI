@@ -1,0 +1,6 @@
+{
+  "name": "Trợ lý học tập Thầy Tùng AI",
+  "description": "Web app giáo dục Toán THCS & THPT - Hỏi đúng cách, hiểu từng bước, tự mình giải được",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
