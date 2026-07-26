@@ -8,6 +8,24 @@ dotenv.config();
 const app = express();
 const PORT = 3000;
 
+// Middleware to normalize req.url and log for Vercel routing
+app.use((req, res, next) => {
+  console.log(`[Incoming Request] ${req.method} ${req.url}`);
+  const nonApiRoutes = ["/index.html", "/src/", "/@vite/", "/node_modules/", "/assets/"];
+  const isStaticAsset = nonApiRoutes.some(p => req.url?.startsWith(p)) || req.url?.includes(".");
+  
+  if (req.url && !req.url.startsWith("/api/") && !isStaticAsset && req.url !== "/") {
+    const originalUrl = req.url;
+    if (req.url.startsWith("/")) {
+      req.url = "/api" + req.url;
+    } else {
+      req.url = "/api/" + req.url;
+    }
+    console.log(`[Normalized URL on Vercel] ${originalUrl} -> ${req.url}`);
+  }
+  next();
+});
+
 app.use(express.json({ limit: "15mb" }));
 
 // System Prompt for GeoGebra Command Generation
@@ -315,8 +333,15 @@ NHÂN CÁCH & NGUYÊN TẮC BẮT BUỘC:
 
 // Helper to initialize Gemini API client
 function getGenAI() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = 
+    process.env.GEMINI_API_KEY || 
+    process.env.gemini_api_key || 
+    process.env.Gemini_Api_Key ||
+    process.env.VITE_GEMINI_API_KEY ||
+    process.env.vite_gemini_api_key;
+    
   if (!apiKey) {
+    console.warn("[Gemini API] WARNING: No GEMINI_API_KEY environment variable detected!");
     return null;
   }
   return new GoogleGenAI({
@@ -353,22 +378,13 @@ async function callGeminiWithFallback(
 
   // Helper to map theoretical/placeholder models to active, supported Gemini API models
   const getRealModelName = (modelName: string): string => {
-    if (modelName === "gemma-4-31b") {
-      // Map gemma-4-31b to a highly capable Pro model to avoid 404 NOT_FOUND
-      return "gemini-3.1-pro-preview";
-    }
-    if (modelName === "gemma-4-26b-a4b-it") {
-      // Map gemma-4-26b-a4b-it to a robust flash model to avoid 404 NOT_FOUND
-      return "gemini-3.1-flash-lite";
-    }
-    if (modelName === "gemini-3.5-flash" || modelName === "gemini-2.5-flash") {
-      return "gemini-3.6-flash";
-    }
     const lower = modelName.toLowerCase();
-    if (lower.includes("1.5") || lower.includes("2.0") || lower.includes("thinking")) {
-      return "gemini-3.6-flash";
+    if (lower.includes("pro") || lower.includes("31b") || lower.includes("gemma-4-31b")) {
+      // Map reasoning & complex tasks to gemini-2.5-pro
+      return "gemini-2.5-pro";
     }
-    return modelName;
+    // Map general & fast tasks to gemini-2.5-flash
+    return "gemini-2.5-flash";
   };
 
   const triedModels = new Set<string>();
@@ -393,7 +409,7 @@ async function callGeminiWithFallback(
       const errMsg = String(err?.message || err || "").toLowerCase();
       console.warn(`[Gemini API] Model '${currentModel}' (mapped to '${realModel}') failed. Error:`, err?.message || err);
 
-      // Check for token / context exhaustion (hết token)
+      // Check for token / context exhaustion
       const isTokenExceeded = errMsg.includes("token") || 
                               errMsg.includes("context") || 
                               errMsg.includes("limit") || 
@@ -401,49 +417,18 @@ async function callGeminiWithFallback(
                               errMsg.includes("exceed");
 
       if (isTokenExceeded) {
-        console.warn(`[Gemini API] Token limit/context exceeded. Switching to gemma-4-26b-a4b-it as requested`);
-        currentModel = "gemma-4-26b-a4b-it";
-        continue;
+        console.warn(`[Gemini API] Token limit/context exceeded.`);
       }
 
-      // Check for quota / rate limit / 429 errors (hết quota)
-      const isQuotaError = errMsg.includes("quota") || 
-                            errMsg.includes("rate limit") || 
-                            errMsg.includes("resource_exhausted") || 
-                            errMsg.includes("429") ||
-                            errMsg.includes("exhausted");
-
-      if (isQuotaError || true) { // Fall back cascade for other errors too to be robust
-        if (currentModel === "gemma-4-31b") {
-          console.warn(`[Gemini API] Gemma-4-31b failed/exhausted. Falling back to gemini-3.5-flash`);
-          currentModel = "gemini-3.5-flash";
-        } else if (currentModel === "gemini-3.5-flash") {
-          console.warn(`[Gemini API] Gemini-3.5-flash failed/exhausted. Falling back to gemini-3.1-pro-preview`);
-          currentModel = "gemini-3.1-pro-preview";
-        } else if (currentModel === "gemini-3.1-pro-preview") {
-          console.warn(`[Gemini API] Gemini-3.1-pro-preview failed/exhausted. Falling back to gemini-2.5-flash`);
-          currentModel = "gemini-2.5-flash";
-        } else if (currentModel === "gemini-2.5-flash") {
-          console.warn(`[Gemini API] Gemini-2.5-flash failed/exhausted. Falling back to gemma-4-26b-a4b-it`);
-          currentModel = "gemma-4-26b-a4b-it";
-        } else {
-          // If we are already at gemma-4-26b-a4b-it or another model, try any model we haven't tried yet
-          const backupSequence = ["gemma-4-31b", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-2.5-flash", "gemma-4-26b-a4b-it"];
-          let nextModel = "";
-          for (const m of backupSequence) {
-            if (!triedModels.has(m)) {
-              nextModel = m;
-              break;
-            }
-          }
-          if (nextModel) {
-            console.warn(`[Gemini API] Model chain exhausted. Trying untried model from sequence: ${nextModel}`);
-            currentModel = nextModel;
-          } else {
-            console.error(`[Gemini API] All fallback models failed.`);
-            break;
-          }
-        }
+      // Roll over to fallback models
+      if (currentModel === "gemma-4-31b" || currentModel === "gemini-3.1-pro-preview") {
+        console.warn(`[Gemini API] Pro model failed/exhausted. Falling back to gemini-2.5-flash`);
+        currentModel = "gemini-2.5-flash";
+      } else if (currentModel === "gemini-3.5-flash" || currentModel === "gemini-2.5-flash" || currentModel === "gemma-4-26b-a4b-it") {
+        console.warn(`[Gemini API] Flash model failed/exhausted. Falling back to gemini-2.5-pro`);
+        currentModel = "gemma-4-31b"; // Maps to gemini-2.5-pro
+      } else {
+        break;
       }
     }
   }
