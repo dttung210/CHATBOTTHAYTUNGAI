@@ -362,6 +362,13 @@ async function callGeminiWithFallback(
       // Map gemma-4-26b-a4b-it to a robust flash model to avoid 404 NOT_FOUND
       return "gemini-3.1-flash-lite";
     }
+    if (modelName === "gemini-3.5-flash" || modelName === "gemini-2.5-flash") {
+      return "gemini-3.6-flash";
+    }
+    const lower = modelName.toLowerCase();
+    if (lower.includes("1.5") || lower.includes("2.0") || lower.includes("thinking")) {
+      return "gemini-3.6-flash";
+    }
     return modelName;
   };
 
@@ -447,11 +454,23 @@ async function callGeminiWithFallback(
 
 // Route 1: Health check
 app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    hasApiKey: !!process.env.GEMINI_API_KEY,
-    appName: "Trợ lý học tập Thầy Tùng AI"
-  });
+  const hasKey = !!process.env.GEMINI_API_KEY;
+  if (hasKey) {
+    res.json({
+      success: true,
+      configured: true,
+      runtime: "server",
+      provider: "gemini",
+      keyMode: "single"
+    });
+  } else {
+    res.json({
+      success: false,
+      configured: false,
+      code: "AI_NOT_CONFIGURED",
+      message: "Hệ thống AI chưa được cấu hình trên máy chủ."
+    });
+  }
 });
 
 // Route 2: Main Solve / Tutor API Endpoint
@@ -549,6 +568,188 @@ Hãy phân tích bài toán, áp dụng Curriculum Guard kiểm tra giới hạn
         req.body?.studentGrade || 8,
         req.body?.knowledgeLevel || "BASIC"
       )
+    });
+  }
+});
+
+// Route 1.5: Modern Chat API Endpoint
+app.post("/api/chat", async (req, res) => {
+  try {
+    const { text, sessionId, mode = "HINT" } = req.body;
+    
+    if (!text || !text.trim()) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_REQUEST",
+        message: "Nội dung câu hỏi không được để trống."
+      });
+    }
+
+    const ai = getGenAI();
+    if (!ai) {
+      return res.status(503).json({
+        success: false,
+        code: "AI_NOT_CONFIGURED",
+        message: "Hệ thống AI chưa được cấu hình trên máy chủ."
+      });
+    }
+
+    const contents = [{ text: `Câu hỏi/Đề bài từ học sinh: ${text}` }];
+    let requestedModel = "gemma-4-31b"; // Maps to gemini-3.1-pro-preview in fallback
+    const responseText = await callGeminiWithFallback(ai, requestedModel, contents, THAY_TUNG_SYSTEM_PROMPT);
+
+    if (!responseText) {
+      return res.status(500).json({
+        success: false,
+        code: "AI_ERROR",
+        message: "Không nhận được phản hồi từ mô hình AI."
+      });
+    }
+
+    let parsedJson: any = null;
+    try {
+      const cleanText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+      parsedJson = JSON.parse(cleanText);
+    } catch (e) {
+      console.error("Failed to parse chat response JSON:", e);
+    }
+
+    if (!parsedJson) {
+      parsedJson = generateMockFallbackResponse(text, mode === "STEP" ? "STEP_BY_STEP" : mode, 8, "BASIC");
+    }
+
+    return res.json({
+      success: true,
+      data: parsedJson
+    });
+
+  } catch (error: any) {
+    console.error("Error in /api/chat:", error);
+    const errMsg = String(error?.message || "").toLowerCase();
+    if (errMsg.includes("quota") || errMsg.includes("rate limit") || errMsg.includes("429")) {
+      return res.status(429).json({
+        success: false,
+        code: "RATE_LIMITED",
+        message: "Hệ thống đang quá tải, em vui lòng đợi một lát rồi thử lại nhé."
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      code: "AI_ERROR",
+      message: "Có lỗi xảy ra trong quá trình xử lý: " + error.message
+    });
+  }
+});
+
+// Route 1.6: Modern Image Analysis API Endpoint (OCR & Structured Extraction)
+app.post("/api/analyze-image", async (req, res) => {
+  try {
+    const { mimeType, data, text, sessionId, mode = "HINT" } = req.body;
+
+    if (!data) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_IMAGE",
+        message: "Dữ liệu hình ảnh không hợp lệ."
+      });
+    }
+
+    const allowedMimeTypes = ["image/jpeg", "image/png", "image/webp", "image/jpg"];
+    const activeMime = mimeType || "image/jpeg";
+    if (!allowedMimeTypes.includes(activeMime)) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_IMAGE",
+        message: "Định dạng ảnh không được hỗ trợ. Chỉ nhận JPG, PNG, WEBP."
+      });
+    }
+
+    const ai = getGenAI();
+    if (!ai) {
+      return res.status(503).json({
+        success: false,
+        code: "AI_NOT_CONFIGURED",
+        message: "Hệ thống AI chưa được cấu hình trên máy chủ."
+      });
+    }
+
+    const cleanBase64 = data.replace(/^data:image\/\w+;base64,/, "");
+
+    const contents: any[] = [
+      {
+        inlineData: {
+          data: cleanBase64,
+          mimeType: activeMime
+        }
+      },
+      {
+        text: `Hãy nhận diện đề bài toán từ ảnh đính kèm. ${text ? `Gợi ý thêm từ học sinh: ${text}` : ""}`
+      }
+    ];
+
+    const imagePrompt = `
+Bạn là Chuyên gia nhận diện đề toán bằng hình ảnh Việt Nam (Lớp 6-12).
+Nhiệm vụ: Phân tích ảnh và trích xuất đề bài toán thành JSON cấu trúc.
+
+Yêu cầu trả về JSON có dạng chính xác như sau:
+{
+  "success": true,
+  "recognizedText": "Đoạn văn bản thô nhận diện từ ảnh",
+  "normalizedText": "Đoạn văn bản đã được chuẩn hóa lại để dễ hiểu",
+  "latex": "Đề bài đầy đủ được định dạng LaTeX chuẩn giữa các dấu $ hoặc $$",
+  "problemType": "ALGEBRA | GEOMETRY | EQUATION | INEQUALITY | CALCULUS | OTHER",
+  "givens": ["Các dữ kiện đề bài cho, ví dụ: Tam giác ABC vuông tại A", "AB = 3cm", "AC = 4cm"],
+  "requirements": ["Các yêu cầu cần tìm/chứng minh, ví dụ: Tính BC", "Tính đường cao AH"],
+  "confidence": 0.95,
+  "uncertainItems": [],
+  "warnings": []
+}
+
+BẮT BUỘC: ĐẦU RA CHỈ ĐƯỢC CHỨA JSON TRÊN, KHÔNG CÓ GIẢI THÍCH NGOÀI.
+`;
+
+    const responseText = await callGeminiWithFallback(ai, "gemini-3.6-flash", contents, imagePrompt);
+
+    if (!responseText) {
+      return res.status(500).json({
+        success: false,
+        code: "AI_ERROR",
+        message: "Không thể phân tích ảnh thành công."
+      });
+    }
+
+    let parsedJson: any = null;
+    try {
+      const cleanText = responseText.replace(/```json/gi, "").replace(/```/g, "").trim();
+      parsedJson = JSON.parse(cleanText);
+    } catch (e) {
+      console.error("Failed to parse analyze-image JSON:", e);
+    }
+
+    if (!parsedJson) {
+      return res.status(500).json({
+        success: false,
+        code: "INVALID_RESPONSE",
+        message: "Không thể phân tích kết quả định dạng JSON từ mô hình."
+      });
+    }
+
+    return res.json(parsedJson);
+
+  } catch (error: any) {
+    console.error("Error in /api/analyze-image:", error);
+    const errMsg = String(error?.message || "").toLowerCase();
+    if (errMsg.includes("quota") || errMsg.includes("rate limit") || errMsg.includes("429")) {
+      return res.status(429).json({
+        success: false,
+        code: "RATE_LIMITED",
+        message: "Hệ thống đang quá tải, em vui lòng đợi một lát rồi thử lại nhé."
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      code: "AI_ERROR",
+      message: "Lỗi trong quá trình xử lý ảnh: " + error.message
     });
   }
 });
@@ -1160,4 +1361,8 @@ async function startServer() {
   });
 }
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
