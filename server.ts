@@ -361,76 +361,23 @@ async function callGeminiWithFallback(
   contents: any[],
   systemInstruction: string
 ): Promise<string> {
-  // Normalize primaryModel input
-  let currentModel = primaryModel || "gemma-4-31b";
-  const pLower = currentModel.toLowerCase();
-  if (pLower.includes("31b") || pLower.includes("gemma-4")) {
-    currentModel = "gemma-4-31b";
-  } else if (pLower.includes("3.5") || pLower.includes("35")) {
-    currentModel = "gemini-3.5-flash";
-  } else if (pLower.includes("3.1") || pLower.includes("31") || pLower.includes("pro")) {
-    currentModel = "gemini-3.1-pro-preview";
-  } else if (pLower.includes("2.5") || pLower.includes("25")) {
-    currentModel = "gemini-2.5-flash";
-  } else if (pLower.includes("26b") || pLower.includes("gemma-4-26b")) {
-    currentModel = "gemma-4-26b-a4b-it";
-  }
-
-  // Helper to map theoretical/placeholder models to active, supported Gemini API models
-  const getRealModelName = (modelName: string): string => {
-    const lower = modelName.toLowerCase();
-    if (lower.includes("pro") || lower.includes("31b") || lower.includes("gemma-4-31b")) {
-      // Map reasoning & complex tasks to gemini-2.5-pro
-      return "gemini-2.5-pro";
+  const modelToUse = "gemini-2.5-flash";
+  console.log(`[Gemini API] Using single robust model: ${modelToUse} for request.`);
+  
+  try {
+    const response = await ai.models.generateContent({
+      model: modelToUse,
+      contents,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json"
+      }
+    });
+    if (response && response.text) {
+      return response.text;
     }
-    // Map general & fast tasks to gemini-2.5-flash
-    return "gemini-2.5-flash";
-  };
-
-  const triedModels = new Set<string>();
-
-  while (currentModel && !triedModels.has(currentModel)) {
-    triedModels.add(currentModel);
-    const realModel = getRealModelName(currentModel);
-    console.log(`[Gemini API] Requesting model: ${realModel} (representing ${currentModel})`);
-    try {
-      const response = await ai.models.generateContent({
-        model: realModel,
-        contents,
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json"
-        }
-      });
-      if (response && response.text) {
-        return response.text;
-      }
-    } catch (err: any) {
-      const errMsg = String(err?.message || err || "").toLowerCase();
-      console.warn(`[Gemini API] Model '${currentModel}' (mapped to '${realModel}') failed. Error:`, err?.message || err);
-
-      // Check for token / context exhaustion
-      const isTokenExceeded = errMsg.includes("token") || 
-                              errMsg.includes("context") || 
-                              errMsg.includes("limit") || 
-                              errMsg.includes("max_tokens") || 
-                              errMsg.includes("exceed");
-
-      if (isTokenExceeded) {
-        console.warn(`[Gemini API] Token limit/context exceeded.`);
-      }
-
-      // Roll over to fallback models
-      if (currentModel === "gemma-4-31b" || currentModel === "gemini-3.1-pro-preview") {
-        console.warn(`[Gemini API] Pro model failed/exhausted. Falling back to gemini-2.5-flash`);
-        currentModel = "gemini-2.5-flash";
-      } else if (currentModel === "gemini-3.5-flash" || currentModel === "gemini-2.5-flash" || currentModel === "gemma-4-26b-a4b-it") {
-        console.warn(`[Gemini API] Flash model failed/exhausted. Falling back to gemini-2.5-pro`);
-        currentModel = "gemma-4-31b"; // Maps to gemini-2.5-pro
-      } else {
-        break;
-      }
-    }
+  } catch (err: any) {
+    console.error(`[Gemini API] Error calling model '${modelToUse}':`, err?.message || err);
   }
 
   return "";

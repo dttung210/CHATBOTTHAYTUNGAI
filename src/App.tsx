@@ -15,7 +15,7 @@ const DEFAULT_GAS_URL = "https://script.google.com/macros/s/AKfycbzMauX8KA8eIYgB
 export default function App() {
   const [student, setStudent] = useState<Student | null>(null);
   const [currentMode, setCurrentMode] = useState<SupportMode>("HINT");
-  const [selectedModel, setSelectedModel] = useState<string>("Gemma 4 (31B)");
+  const [selectedModel, setSelectedModel] = useState<string>("3.5 Flash");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [historyList, setHistoryList] = useState<HistoryRecord[]>([]);
   const [isLoading, setIsLoading] = useState(false);
