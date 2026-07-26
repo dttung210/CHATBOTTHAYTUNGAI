@@ -37,7 +37,7 @@ export default function App() {
     onConfirm: () => {}
   });
 
-  // Auto restore or set default active student session
+  // Auto restore active student session
   useEffect(() => {
     const saved = localStorage.getItem("thay_tung_student") || sessionStorage.getItem("thay_tung_student");
     if (saved) {
@@ -46,18 +46,6 @@ export default function App() {
       } catch (e) {
         console.error(e);
       }
-    } else {
-      // Auto login default student so application is always ready instantly
-      const defaultStudent: Student = {
-        username: "hs8a01",
-        hoTen: "Phạm Khánh Linh",
-        lopDuocPhep: 8,
-        mucDoMacDinh: "BASIC",
-        mucDoToiDa: "BASIC",
-        trangThai: "ACTIVE"
-      };
-      setStudent(defaultStudent);
-      localStorage.setItem("thay_tung_student", JSON.stringify(defaultStudent));
     }
   }, []);
 
